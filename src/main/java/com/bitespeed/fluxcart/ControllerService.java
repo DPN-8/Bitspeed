@@ -3,9 +3,11 @@ package com.bitespeed.fluxcart;
 import com.bitespeed.fluxcart.Entity.Contact;
 import com.bitespeed.fluxcart.Entity.ContactResponse;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.rest.webmvc.ResourceNotFoundException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -17,9 +19,6 @@ public class ControllerService {
     private final ContactRepository contactRepository;
 
     public ResponseEntity<?> createContact(Contact contact) {
-        if (isInvalidContact(contact)) {
-            return ResponseEntity.status(HttpStatus.NOT_ACCEPTABLE).body("Email and phone number should not be null");
-        }
 
         ContactResponse response = new ContactResponse();
         List<String> emails = new ArrayList<>();
@@ -32,7 +31,7 @@ public class ControllerService {
             handleExistingContact(contact, response, emails, phoneNumbers, secondaryContactIds);
         }
 
-        return ResponseEntity.status(HttpStatus.CREATED).body(response);
+        return ResponseEntity.ok(response);
     }
 
     private boolean isInvalidContact(Contact contact) {
@@ -41,6 +40,9 @@ public class ControllerService {
     }
 
     private void createPrimaryContact(Contact contact, ContactResponse response, List<String> emails, List<String> phoneNumbers) {
+        if (isInvalidContact(contact)) {
+            throw new ResponseStatusException(HttpStatus.NOT_ACCEPTABLE, "Email and phone number should not be null");
+        }
         contact.setLinkedPrecedence(Precedence.PRIMARY);
         contactRepository.save(contact);
 
@@ -55,7 +57,9 @@ public class ControllerService {
 
     private void handleExistingContact(Contact contact, ContactResponse response, List<String> emails, List<String> phoneNumbers, List<Integer> secondaryContactIds) {
         Contact existingContact = contactRepository.findByEmailOrPhoneNumber(contact.getEmail(), contact.getPhoneNumber()).get(0);
-
+        if (existingContact.getLinkedPrecedence().equals(Precedence.SECONDARY)) {
+            existingContact = contactRepository.findById(existingContact.getLinkedId()).orElseThrow(() -> new ResourceNotFoundException("Primary Contact not found"));
+        }
         if (contactRepository.checkForEmailAndPhoneNumber(contact.getEmail(), contact.getPhoneNumber())) {
             linkSecondaryContact(contact);
         } else if (contact.getEmail() != null && contact.getPhoneNumber() != null) {
