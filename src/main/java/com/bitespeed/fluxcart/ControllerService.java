@@ -13,61 +13,94 @@ import java.util.List;
 @Service
 @RequiredArgsConstructor
 public class ControllerService {
+
     private final ContactRepository contactRepository;
+
     public ResponseEntity<?> createContact(Contact contact) {
-        ContactResponse response = new ContactResponse();
-        ArrayList<String> email = new ArrayList<>();
-        ArrayList<String> phoneNumber = new ArrayList<>();
-        ArrayList<Integer> secondaryContactIds = new ArrayList<>();
-        if (!contactRepository.existsByEmailOrPhoneNumber(contact.getEmail(), contact.getPhoneNumber())) {
-            if (contact.getEmail().isEmpty() || contact.getPhoneNumber().isEmpty()) {
-                return ResponseEntity.status(HttpStatus.NOT_ACCEPTABLE).body("Email and phone number should not be null");
-            }
-            contact.setLinkedPrecedence(Precedence.PRIMARY);
-            contactRepository.save(contact);
-            email.add(contact.getEmail());
-            Contact primaryContact = contactRepository.findPrimaryContact(contact.getEmail(), contact.getPhoneNumber());
-            response.setPrimaryContactId(primaryContact.getId());
-            response.setEmail(email);
-            phoneNumber.add(contact.getPhoneNumber());
-            response.setPhoneNumbers(phoneNumber);
-        } else {
-            Contact reqContact = contactRepository.findByEmailOrPhoneNumber(contact.getEmail(), contact.getPhoneNumber()).get(0);
-            if (contactRepository.checkForEmailAndPhoneNumber(contact.getEmail(), contact.getPhoneNumber())) {
-                Contact emailContact = contactRepository.findByEmail(contact.getEmail());
-                Contact phoneContact = contactRepository.findByPhoneNumber(contact.getPhoneNumber());
-                phoneContact.setLinkedPrecedence(Precedence.SECONDARY);
-                phoneContact.setLinkedId(emailContact.getId());
-                contactRepository.save(phoneContact);
-            }
-            if (contact.getEmail() != null && contact.getPhoneNumber() != null) {
-                contact.setLinkedId(reqContact.getId());
-                contact.setLinkedPrecedence(Precedence.SECONDARY);
-                contactRepository.save(contact);
-            }
-            sendResponse(response, reqContact, email, phoneNumber, secondaryContactIds, contact);
+        if (isInvalidContact(contact)) {
+            return ResponseEntity.status(HttpStatus.NOT_ACCEPTABLE).body("Email and phone number should not be null");
         }
+
+        ContactResponse response = new ContactResponse();
+        List<String> emails = new ArrayList<>();
+        List<String> phoneNumbers = new ArrayList<>();
+        List<Integer> secondaryContactIds = new ArrayList<>();
+
+        if (!contactRepository.existsByEmailOrPhoneNumber(contact.getEmail(), contact.getPhoneNumber())) {
+            createPrimaryContact(contact, response, emails, phoneNumbers);
+        } else {
+            handleExistingContact(contact, response, emails, phoneNumbers, secondaryContactIds);
+        }
+
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 
-    private void sendResponse(ContactResponse response, Contact reqContact, ArrayList<String> email, ArrayList<String> phoneNumber, ArrayList<Integer> secondaryContactIds, Contact contact) {
-        Contact primaryContact = new Contact();
-        if(reqContact.getLinkedPrecedence() == Precedence.PRIMARY) {
-            primaryContact = reqContact;
-        } else if (reqContact.getLinkedPrecedence() == Precedence.SECONDARY) {
-            primaryContact = contactRepository.findById(reqContact.getLinkedId()).get();
-        }
-        List<Contact> secondaryContact = new ArrayList<>(contactRepository.findByLinkedId(primaryContact.getId()));
-        email.add(primaryContact.getEmail());
-        phoneNumber.add(primaryContact.getPhoneNumber());
-        for (Contact con : secondaryContact) {
-            if(!email.contains(con.getEmail())) email.add(con.getEmail());
-            if(!phoneNumber.contains(con.getPhoneNumber())) phoneNumber.add(con.getPhoneNumber());
-            secondaryContactIds.add(con.getId());
-        }
+    private boolean isInvalidContact(Contact contact) {
+        return contact.getEmail() == null || contact.getEmail().isEmpty()
+                || contact.getPhoneNumber() == null || contact.getPhoneNumber().isEmpty();
+    }
+
+    private void createPrimaryContact(Contact contact, ContactResponse response, List<String> emails, List<String> phoneNumbers) {
+        contact.setLinkedPrecedence(Precedence.PRIMARY);
+        contactRepository.save(contact);
+
+        emails.add(contact.getEmail());
+        phoneNumbers.add(contact.getPhoneNumber());
+
+        Contact primaryContact = contactRepository.findPrimaryContact(contact.getEmail(), contact.getPhoneNumber());
         response.setPrimaryContactId(primaryContact.getId());
-        response.setEmail(email);
+        response.setEmail(emails);
+        response.setPhoneNumbers(phoneNumbers);
+    }
+
+    private void handleExistingContact(Contact contact, ContactResponse response, List<String> emails, List<String> phoneNumbers, List<Integer> secondaryContactIds) {
+        Contact existingContact = contactRepository.findByEmailOrPhoneNumber(contact.getEmail(), contact.getPhoneNumber()).get(0);
+
+        if (contactRepository.checkForEmailAndPhoneNumber(contact.getEmail(), contact.getPhoneNumber())) {
+            linkSecondaryContact(contact);
+        } else if (contact.getEmail() != null && contact.getPhoneNumber() != null) {
+            contact.setLinkedId(existingContact.getId());
+            contact.setLinkedPrecedence(Precedence.SECONDARY);
+            contactRepository.save(contact);
+        }
+
+        sendResponse(response, existingContact, emails, phoneNumbers, secondaryContactIds, contact);
+    }
+
+    private void linkSecondaryContact(Contact contact) {
+        Contact emailContact = contactRepository.findByEmail(contact.getEmail());
+        Contact phoneContact = contactRepository.findByPhoneNumber(contact.getPhoneNumber());
+
+        phoneContact.setLinkedPrecedence(Precedence.SECONDARY);
+        phoneContact.setLinkedId(emailContact.getId());
+        contactRepository.save(phoneContact);
+    }
+
+    private void sendResponse(ContactResponse response, Contact existingContact, List<String> emails, List<String> phoneNumbers, List<Integer> secondaryContactIds, Contact contact) {
+        Contact primaryContact = getPrimaryContact(existingContact);
+        assert primaryContact != null;
+        emails.add(primaryContact.getEmail());
+        phoneNumbers.add(primaryContact.getPhoneNumber());
+
+        List<Contact> secondaryContacts = contactRepository.findByLinkedId(primaryContact.getId());
+        for (Contact secondaryContact : secondaryContacts) {
+            if (!emails.contains(secondaryContact.getEmail())) emails.add(secondaryContact.getEmail());
+            if (!phoneNumbers.contains(secondaryContact.getPhoneNumber())) phoneNumbers.add(secondaryContact.getPhoneNumber());
+            secondaryContactIds.add(secondaryContact.getId());
+        }
+
+        response.setPrimaryContactId(primaryContact.getId());
+        response.setEmail(emails);
         response.setSecondaryId(secondaryContactIds);
-        response.setPhoneNumbers(phoneNumber);
+        response.setPhoneNumbers(phoneNumbers);
+    }
+
+    private Contact getPrimaryContact(Contact existingContact) {
+        if (existingContact.getLinkedPrecedence() == Precedence.PRIMARY) {
+            return existingContact;
+        } else if (existingContact.getLinkedPrecedence() == Precedence.SECONDARY) {
+            return contactRepository.findById(existingContact.getLinkedId()).orElseThrow(() -> new IllegalStateException("Primary contact not found"));
+        }
+        return null;
     }
 }
