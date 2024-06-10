@@ -1,4 +1,3 @@
-# Use the maven image to build the project
 FROM maven:3.8.5-openjdk-17 AS build
 
 WORKDIR /app
